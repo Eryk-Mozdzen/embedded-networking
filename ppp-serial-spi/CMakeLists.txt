@@ -8,6 +8,8 @@ enable_language(ASM C)
 
 add_executable(${CMAKE_PROJECT_NAME}.elf
     "src/main.c"
+    "src/fifo.c"
+    "src/sys.c"
 
     "cubemx/Core/Src/main.c"
     "cubemx/Core/Src/stm32f4xx_hal_msp.c"
@@ -252,8 +254,8 @@ target_compile_options(${CMAKE_PROJECT_NAME}.elf PRIVATE
 
         -mthumb
         -mcpu=cortex-m4
+        -mhard-float
         -mfpu=fpv4-sp-d16
-        -mfloat-abi=hard
 	>
 
 	$<$<COMPILE_LANGUAGE:C>:
@@ -269,9 +271,9 @@ target_compile_options(${CMAKE_PROJECT_NAME}.elf PRIVATE
 		-fdata-sections
 
         -mthumb
-		-mcpu=cortex-m4
+        -mcpu=cortex-m4
+        -mhard-float
         -mfpu=fpv4-sp-d16
-        -mfloat-abi=hard
 	>
 )
 
@@ -282,13 +284,12 @@ target_link_options(${CMAKE_PROJECT_NAME}.elf PRIVATE
 	-Wl,-cref
     -Wl,--start-group -lc -Wl,--end-group
 
-    -u _printf_float
     --specs=nano.specs
 
     -mthumb
-	-mcpu=cortex-m4
-    -mfpu=fpv4-sp-d16
-    -mfloat-abi=hard
+    -mcpu=cortex-m4
+	-mhard-float
+	-mfpu=fpv4-sp-d16
 )
 
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME}.elf POST_BUILD
@@ -299,5 +300,4 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME}.elf POST_BUILD
 add_custom_target(flash
     COMMAND STM32_Programmer_CLI -c port=SWD -w ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.elf -rst
     DEPENDS ${CMAKE_PROJECT_NAME}.elf
-    USES_TERMINAL
 )
