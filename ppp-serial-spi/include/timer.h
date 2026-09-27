@@ -3,20 +3,14 @@
 
 #include <stdint.h>
 
-#define timer_init(timer, period)                                                                  \
-    do {                                                                                           \
-        (timer)->_start = HAL_GetTick();                                                           \
-        (timer)->_period = (period);                                                               \
-    } while(0)
-#define timer_timeout(timer) ((HAL_GetTick() - (timer)->_start) >= (timer)->_period)
-#define timer_reset(timer)                                                                         \
-    do {                                                                                           \
-        (timer)->_start += (timer)->_period;                                                       \
-    } while(0)
-
 typedef struct {
-    uint32_t _start;
-    uint32_t _period;
+    uint32_t start;
+    uint32_t period;
 } timer_t;
+
+void timer_init(timer_t *timer, const uint32_t period);
+void timer_reset(timer_t *timer);
+void timer_restart(timer_t *timer);
+uint8_t timer_timeout(timer_t *timer);
 
 #endif

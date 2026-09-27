@@ -9,6 +9,7 @@ enable_language(ASM C)
 add_executable(${CMAKE_PROJECT_NAME}.elf
     "src/main.c"
     "src/fifo.c"
+    "src/timer.c"
     "src/sys.c"
 
     "cubemx/Core/Src/main.c"

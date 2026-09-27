@@ -1,7 +1,9 @@
 #ifndef CC_H
 #define CC_H
 
-typedef int sys_prot_t;
+#include <stdint.h>
+
+typedef uint32_t sys_prot_t;
 
 #if defined(__ICCARM__)
 

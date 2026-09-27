@@ -3,7 +3,7 @@
 
 #define NO_SYS        1
 #define MEM_ALIGNMENT 4
-#define MEM_SIZE      (8 * 1024)
+#define MEM_SIZE      (24 * 1024)
 #define LWIP_RAW      0
 #define LWIP_NETCONN  0
 #define LWIP_SOCKET   0

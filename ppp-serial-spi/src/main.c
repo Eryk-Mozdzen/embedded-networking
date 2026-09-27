@@ -20,10 +20,13 @@ extern UART_HandleTypeDef huart2;
 
 static fifo_t fifo_tx;
 static fifo_t fifo_rx;
+static timer_t timeout_tx;
+static timer_t timeout_rx;
 static state_t state;
 
 static volatile uint8_t dma_tx_ready = 1;
 static volatile uint8_t dma_tx_buffer[1024];
+static volatile uint32_t dma_rx_pos = 0;
 static volatile uint8_t dma_rx_buffer[1024];
 
 void SystemClock_Config();
@@ -31,7 +34,44 @@ void MX_GPIO_Init();
 void MX_DMA_Init();
 void MX_USART2_UART_Init();
 
-static void ppp_link_status_cb(ppp_pcb *pcb, int err_code, void *ctx) {
+static void data_send() {
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if(dma_tx_ready) {
+        const uint32_t len = fifo_read(&fifo_tx, (uint8_t *)dma_tx_buffer, sizeof(dma_tx_buffer));
+        if(len > 0) {
+            dma_tx_ready = 0;
+            HAL_UART_Transmit_DMA(&huart2, (uint8_t *)dma_tx_buffer, len);
+        }
+    }
+
+    __set_PRIMASK(primask);
+}
+
+static void data_recv() {
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    const uint32_t pos = sizeof(dma_rx_buffer) - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+
+    if(pos != dma_rx_pos) {
+        if(pos > dma_rx_pos) {
+            fifo_write(&fifo_rx, (uint8_t *)&dma_rx_buffer[dma_rx_pos], pos - dma_rx_pos);
+        } else {
+            fifo_write(&fifo_rx, (uint8_t *)&dma_rx_buffer[dma_rx_pos],
+                       sizeof(dma_rx_buffer) - dma_rx_pos);
+            if(pos > 0) {
+                fifo_write(&fifo_rx, (uint8_t *)dma_rx_buffer, pos);
+            }
+        }
+        dma_rx_pos = pos;
+    }
+
+    __set_PRIMASK(primask);
+}
+
+static void pppos_link_status_cb(ppp_pcb *pcb, int err_code, void *ctx) {
     (void)pcb;
     (void)ctx;
 
@@ -42,10 +82,22 @@ static void ppp_link_status_cb(ppp_pcb *pcb, int err_code, void *ctx) {
     }
 }
 
-static uint32_t ppp_output_cb(ppp_pcb *pcb, const void *data, uint32_t data_size, void *ctx) {
+static uint32_t pppos_output_cb(ppp_pcb *pcb, const void *data, uint32_t data_size, void *ctx) {
     (void)pcb;
     (void)ctx;
-    return fifo_write(&fifo_tx, data, data_size);
+
+    const uint8_t *buffer = data;
+    uint32_t n;
+    uint32_t total = 0;
+    while(total < data_size) {
+        n = fifo_write(&fifo_tx, &buffer[total], data_size - total);
+        if(n < (data_size - total)) {
+            timer_restart(&timeout_tx);
+            data_send();
+        }
+        total += n;
+    }
+    return data_size;
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
@@ -54,19 +106,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     }
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart) {
     if(huart == &huart2) {
-        fifo_write(&fifo_rx, (uint8_t *)&dma_rx_buffer, 1);
-        HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dma_rx_buffer, 1);
+        timer_restart(&timeout_rx);
+        data_recv();
     }
 }
 
-// void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
-//     if(huart == &huart2) {
-//         fifo_write(&fifo_rx, (uint8_t *)&dma_rx_buffer, Size);
-//         HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *)&dma_rx_buffer, sizeof(dma_rx_buffer));
-//     }
-// }
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if(huart == &huart2) {
+        timer_restart(&timeout_rx);
+        data_recv();
+    }
+}
 
 int main() {
     HAL_Init();
@@ -79,22 +131,21 @@ int main() {
 
     fifo_init(&fifo_tx);
     fifo_init(&fifo_rx);
-    HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dma_rx_buffer, 1);
-    // HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *)&dma_rx_buffer, sizeof(dma_rx_buffer));
+    timer_init(&timeout_tx, 10);
+    timer_init(&timeout_rx, 10);
+    HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dma_rx_buffer, sizeof(dma_rx_buffer));
 
     lwip_init();
 
     struct netif netif = {0};
-    ppp_pcb *ppp = pppos_create(&netif, ppp_output_cb, ppp_link_status_cb, NULL);
+    ppp_pcb *ppp = pppos_create(&netif, pppos_output_cb, pppos_link_status_cb, NULL);
     ppp_set_default(ppp);
 
     uint8_t buffer_rx[1024];
     uint32_t buffer_len;
 
     uint32_t blink_counter = 1;
-
     timer_t blink;
-
     timer_init(&blink, 250);
 
     while(1) {
@@ -124,17 +175,19 @@ int main() {
             } break;
         }
 
+        if(timer_timeout(&timeout_tx)) {
+            timer_reset(&timeout_tx);
+            data_send();
+        }
+
+        if(timer_timeout(&timeout_rx)) {
+            timer_reset(&timeout_rx);
+            data_recv();
+        }
+
         buffer_len = fifo_read(&fifo_rx, buffer_rx, sizeof(buffer_rx));
         if(buffer_len > 0) {
             pppos_input(ppp, buffer_rx, buffer_len);
-        }
-
-        if(dma_tx_ready) {
-            buffer_len = fifo_read(&fifo_tx, (uint8_t *)dma_tx_buffer, sizeof(dma_tx_buffer));
-            if(buffer_len > 0) {
-                dma_tx_ready = 0;
-                HAL_UART_Transmit_DMA(&huart2, (uint8_t *)dma_tx_buffer, buffer_len);
-            }
         }
 
         sys_check_timeouts();
