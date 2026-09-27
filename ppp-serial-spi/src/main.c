@@ -25,9 +25,9 @@ static timer_t timeout_rx;
 static state_t state;
 
 static volatile uint8_t dma_tx_ready = 1;
-static volatile uint8_t dma_tx_buffer[2048];
+static volatile uint8_t dma_tx_buffer[8192];
 static volatile uint32_t dma_rx_pos = 0;
-static volatile uint8_t dma_rx_buffer[2048];
+static volatile uint8_t dma_rx_buffer[8192];
 
 void SystemClock_Config();
 void MX_GPIO_Init();

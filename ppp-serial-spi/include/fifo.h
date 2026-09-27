@@ -6,7 +6,7 @@
 typedef struct {
     volatile uint32_t rd;
     volatile uint32_t wr;
-    uint8_t buffer[2048];
+    uint8_t buffer[8192];
 } fifo_t;
 
 void fifo_init(fifo_t *fifo);
