@@ -19,3 +19,7 @@ uint32_t sys_now() {
 uint32_t sys_jiffies() {
     return HAL_GetTick();
 }
+
+int __io_putchar(int ch) {
+    return ITM_SendChar(ch);
+}

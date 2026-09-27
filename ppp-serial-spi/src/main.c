@@ -25,9 +25,9 @@ static timer_t timeout_rx;
 static state_t state;
 
 static volatile uint8_t dma_tx_ready = 1;
-static volatile uint8_t dma_tx_buffer[1024];
+static volatile uint8_t dma_tx_buffer[2048];
 static volatile uint32_t dma_rx_pos = 0;
-static volatile uint8_t dma_rx_buffer[1024];
+static volatile uint8_t dma_rx_buffer[2048];
 
 void SystemClock_Config();
 void MX_GPIO_Init();
@@ -141,14 +141,31 @@ int main() {
     ppp_pcb *ppp = pppos_create(&netif, pppos_output_cb, pppos_link_status_cb, NULL);
     ppp_set_default(ppp);
 
-    uint8_t buffer_rx[1024];
+    uint8_t buffer_rx[128];
     uint32_t buffer_len;
 
     uint32_t blink_counter = 1;
     timer_t blink;
     timer_init(&blink, 250);
 
+    timer_t stats;
+    timer_init(&stats, 1000);
+
+    // CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    // DWT->CYCCNT = 0;
+    // DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    // uint32_t t0 = 0;
+    // uint32_t t1 = 0;
+    // uint32_t loop_max_us = 0;
+
     while(1) {
+        // t1 = DWT->CYCCNT;
+        // uint32_t dt_us = (t1 - t0) / (SystemCoreClock / 1000000);
+        // if(dt_us > loop_max_us) {
+        //     loop_max_us = dt_us;
+        // }
+        // t0 = DWT->CYCCNT;
+
         if(timer_timeout(&blink)) {
             timer_reset(&blink);
             HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, blink_counter & 0x01);
@@ -156,6 +173,13 @@ int main() {
             HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, blink_counter & 0x04);
             HAL_GPIO_WritePin(GPIOD, GPIO_PIN_15, blink_counter & 0x08);
             blink_counter = ((blink_counter << 1) | (blink_counter >> 3)) & 0x0F;
+        }
+
+        if(timer_timeout(&stats)) {
+            timer_reset(&stats);
+            stats_display();
+            // printf("main loop max iteration time: %lu us\n", (unsigned long)loop_max_us);
+            // loop_max_us = 0;
         }
 
         switch(state) {
@@ -168,7 +192,16 @@ int main() {
             } break;
             case STATE_CONNECTED: {
                 state = STATE_LOOP;
-                lwiperf_start_tcp_server_default(NULL, NULL);
+                // printf("out ACCM (what we escape when sending): 0x%08lX\n",
+                //        (unsigned long)ppp->lcp_gotoptions.asyncmap);
+                // printf("in  ACCM (what peer escapes when sending to us): 0x%08lX\n",
+                //        (unsigned long)ppp->lcp_hisoptions.asyncmap);
+
+                ip_addr_t remote;
+                IP4_ADDR(&remote, 192, 168, 7, 1);
+                lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_DUAL, NULL,
+                                         NULL);
+                // lwiperf_start_tcp_server_default(NULL, NULL);
             } break;
             case STATE_LOOP: {
 
