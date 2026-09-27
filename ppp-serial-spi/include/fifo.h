@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 typedef struct {
-    uint8_t buffer[1024];
+    uint8_t buffer[2048];
     volatile uint32_t rd;
     volatile uint32_t wr;
 } fifo_t;

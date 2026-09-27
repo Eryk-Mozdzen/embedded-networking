@@ -22,11 +22,13 @@ static fifo_t fifo_tx;
 static fifo_t fifo_rx;
 static state_t state;
 
-static volatile uint8_t send_ready = 1;
-static volatile uint8_t recv_byte;
+static volatile uint8_t dma_tx_ready = 1;
+static volatile uint8_t dma_tx_buffer[1024];
+static volatile uint8_t dma_rx_buffer[1024];
 
 void SystemClock_Config();
 void MX_GPIO_Init();
+void MX_DMA_Init();
 void MX_USART2_UART_Init();
 
 static void ppp_link_status_cb(ppp_pcb *pcb, int err_code, void *ctx) {
@@ -48,28 +50,37 @@ static uint32_t ppp_output_cb(ppp_pcb *pcb, const void *data, uint32_t data_size
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if(huart == &huart2) {
-        send_ready = 1;
+        dma_tx_ready = 1;
     }
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if(huart == &huart2) {
-        fifo_write(&fifo_rx, (uint8_t *)&recv_byte, 1);
-        HAL_UART_Receive_IT(&huart2, (uint8_t *)&recv_byte, 1);
+        fifo_write(&fifo_rx, (uint8_t *)&dma_rx_buffer, 1);
+        HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dma_rx_buffer, 1);
     }
 }
+
+// void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+//     if(huart == &huart2) {
+//         fifo_write(&fifo_rx, (uint8_t *)&dma_rx_buffer, Size);
+//         HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *)&dma_rx_buffer, sizeof(dma_rx_buffer));
+//     }
+// }
 
 int main() {
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
+    MX_DMA_Init();
     MX_USART2_UART_Init();
 
     state = STATE_DISCONNECTED;
 
     fifo_init(&fifo_tx);
     fifo_init(&fifo_rx);
-    HAL_UART_Receive_IT(&huart2, (uint8_t *)&recv_byte, 1);
+    HAL_UART_Receive_DMA(&huart2, (uint8_t *)&dma_rx_buffer, 1);
+    // HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *)&dma_rx_buffer, sizeof(dma_rx_buffer));
 
     lwip_init();
 
@@ -77,7 +88,6 @@ int main() {
     ppp_pcb *ppp = pppos_create(&netif, ppp_output_cb, ppp_link_status_cb, NULL);
     ppp_set_default(ppp);
 
-    uint8_t buffer_tx[1024];
     uint8_t buffer_rx[1024];
     uint32_t buffer_len;
 
@@ -119,11 +129,11 @@ int main() {
             pppos_input(ppp, buffer_rx, buffer_len);
         }
 
-        if(send_ready) {
-            buffer_len = fifo_read(&fifo_tx, buffer_tx, sizeof(buffer_tx));
+        if(dma_tx_ready) {
+            buffer_len = fifo_read(&fifo_tx, (uint8_t *)dma_tx_buffer, sizeof(dma_tx_buffer));
             if(buffer_len > 0) {
-                send_ready = 0;
-                HAL_UART_Transmit_IT(&huart2, buffer_tx, buffer_len);
+                dma_tx_ready = 0;
+                HAL_UART_Transmit_DMA(&huart2, (uint8_t *)dma_tx_buffer, buffer_len);
             }
         }
 
