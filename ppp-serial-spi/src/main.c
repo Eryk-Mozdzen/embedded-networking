@@ -2,7 +2,7 @@
 
 #include <stm32f4xx_hal.h>
 
-// #include <lwip/apps/lwiperf.h>
+#include <lwip/apps/lwiperf.h>
 #include <lwip/init.h>
 #include <lwip/tcp.h>
 #include <lwip/timeouts.h>
@@ -20,7 +20,7 @@ typedef enum {
 } state_t;
 
 extern UART_HandleTypeDef huart2;
-extern SPI_HandleTypeDef hspi1;
+extern SPI_HandleTypeDef hspi2;
 
 static struct {
     fifo_t fifo_tx;
@@ -38,7 +38,7 @@ void SystemClock_Config();
 void MX_GPIO_Init();
 void MX_DMA_Init();
 void MX_USART2_UART_Init();
-void MX_SPI1_Init();
+void MX_SPI2_Init();
 
 static void ppp_uart_data_send() {
     const uint32_t primask = __get_PRIMASK();
@@ -144,7 +144,7 @@ static void ppp_spi_transaction() {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
-    if(ppp_spi.transaction_ready) {
+    if(ppp_spi.transaction_ready /*&& (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_SET)*/) {
         const uint32_t len =
             fifo_read(&ppp_spi.fifo_tx, (uint8_t *)&ppp_spi.transaction_tx_buffer[sizeof(len)],
                       PPP_SPI_TRANSACTION_SIZE - sizeof(len));
@@ -155,8 +155,8 @@ static void ppp_spi_transaction() {
         ppp_spi.transaction_tx_buffer[3] = (len & 0xFF000000) >> 24;
 
         ppp_spi.transaction_ready = 0;
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-        HAL_SPI_TransmitReceive_IT(&hspi1, (uint8_t *)ppp_spi.transaction_tx_buffer,
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+        HAL_SPI_TransmitReceive_IT(&hspi2, (uint8_t *)ppp_spi.transaction_tx_buffer,
                                    (uint8_t *)ppp_spi.transaction_rx_buffer,
                                    PPP_SPI_TRANSACTION_SIZE);
     }
@@ -165,7 +165,7 @@ static void ppp_spi_transaction() {
 }
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
-    if(hspi == &hspi1) {
+    if(hspi == &hspi2) {
         uint32_t len = (((uint32_t)ppp_spi.transaction_rx_buffer[3]) << 24) |
                        (((uint32_t)ppp_spi.transaction_rx_buffer[2]) << 16) |
                        (((uint32_t)ppp_spi.transaction_rx_buffer[1]) << 8) |
@@ -176,7 +176,7 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
 
         fifo_write(&ppp_spi.fifo_rx, (uint8_t *)&ppp_spi.transaction_rx_buffer[sizeof(len)], len);
 
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
         ppp_spi.transaction_ready = 1;
     }
 }
@@ -313,7 +313,7 @@ int main() {
     MX_GPIO_Init();
     MX_DMA_Init();
     MX_USART2_UART_Init();
-    MX_SPI1_Init();
+    MX_SPI2_Init();
 
     ppp_uart.dma_tx_ready = 1;
     ppp_uart.dma_rx_pos = 0;
@@ -329,8 +329,8 @@ int main() {
     ppp_spi.state = STATE_DISCONNECTED;
     fifo_init(&ppp_spi.fifo_tx);
     fifo_init(&ppp_spi.fifo_rx);
-    timer_init(&ppp_spi.timeout, 10);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+    timer_init(&ppp_spi.timeout, 50);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
 
     lwip_init();
 
@@ -340,7 +340,7 @@ int main() {
     struct netif netif2 = {0};
     ppp_pcb *ppp2 = pppos_create(&netif2, ppp_spi_output, ppp_spi_link, NULL);
 
-    ppp_set_default(ppp1);
+    ppp_set_default(ppp2);
 
     uint8_t buffer_rx[128];
     uint32_t buffer_len;
@@ -441,6 +441,12 @@ int main() {
             } break;
             case STATE_CONNECTED: {
                 ppp_spi.state = STATE_LOOP;
+
+                ip_addr_t remote;
+                IP4_ADDR(&remote, 192, 168, 0, 17);
+                lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_CLIENT, NULL,
+                                         NULL);
+                // lwiperf_start_tcp_server_default(NULL, NULL);
             } break;
             case STATE_LOOP: {
 
