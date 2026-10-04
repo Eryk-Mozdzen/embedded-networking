@@ -135,48 +135,44 @@ static struct {
     fifo_t fifo_rx;
     timer_t timeout;
     state_t state;
+    uint8_t transaction_tx[PPP_SPI_TRANSACTION_SIZE];
+    uint8_t transaction_rx[PPP_SPI_TRANSACTION_SIZE];
     volatile uint8_t transaction_ready;
-    volatile uint8_t transaction_tx_buffer[PPP_SPI_TRANSACTION_SIZE];
-    volatile uint8_t transaction_rx_buffer[PPP_SPI_TRANSACTION_SIZE];
 } ppp_spi;
 
 static void ppp_spi_transaction() {
-    const uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-
-    if(ppp_spi.transaction_ready /*&& (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_SET)*/) {
-        const uint32_t len =
-            fifo_read(&ppp_spi.fifo_tx, (uint8_t *)&ppp_spi.transaction_tx_buffer[sizeof(len)],
-                      PPP_SPI_TRANSACTION_SIZE - sizeof(len));
-
-        ppp_spi.transaction_tx_buffer[0] = (len & 0x000000FF) >> 0;
-        ppp_spi.transaction_tx_buffer[1] = (len & 0x0000FF00) >> 8;
-        ppp_spi.transaction_tx_buffer[2] = (len & 0x00FF0000) >> 16;
-        ppp_spi.transaction_tx_buffer[3] = (len & 0xFF000000) >> 24;
-
+    if(ppp_spi.transaction_ready) {
         ppp_spi.transaction_ready = 0;
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
-        HAL_SPI_TransmitReceive_IT(&hspi2, (uint8_t *)ppp_spi.transaction_tx_buffer,
-                                   (uint8_t *)ppp_spi.transaction_rx_buffer,
-                                   PPP_SPI_TRANSACTION_SIZE);
-    }
 
-    __set_PRIMASK(primask);
+        const uint32_t len = fifo_read(&ppp_spi.fifo_tx, &ppp_spi.transaction_tx[sizeof(len)],
+                                       PPP_SPI_TRANSACTION_SIZE - sizeof(len));
+
+        ppp_spi.transaction_tx[0] = (len & 0x000000FF) >> 0;
+        ppp_spi.transaction_tx[1] = (len & 0x0000FF00) >> 8;
+        ppp_spi.transaction_tx[2] = (len & 0x00FF0000) >> 16;
+        ppp_spi.transaction_tx[3] = (len & 0xFF000000) >> 24;
+
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+        HAL_SPI_TransmitReceive_DMA(&hspi2, ppp_spi.transaction_tx, ppp_spi.transaction_rx,
+                                    PPP_SPI_TRANSACTION_SIZE);
+    }
 }
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if(hspi == &hspi2) {
-        uint32_t len = (((uint32_t)ppp_spi.transaction_rx_buffer[3]) << 24) |
-                       (((uint32_t)ppp_spi.transaction_rx_buffer[2]) << 16) |
-                       (((uint32_t)ppp_spi.transaction_rx_buffer[1]) << 8) |
-                       (((uint32_t)ppp_spi.transaction_rx_buffer[0]) << 0);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+
+        uint32_t len = (((uint32_t)ppp_spi.transaction_rx[0]) << 0) |
+                       (((uint32_t)ppp_spi.transaction_rx[1]) << 8) |
+                       (((uint32_t)ppp_spi.transaction_rx[2]) << 16) |
+                       (((uint32_t)ppp_spi.transaction_rx[3]) << 24);
+
         if(len > (PPP_SPI_TRANSACTION_SIZE - sizeof(len))) {
             len = PPP_SPI_TRANSACTION_SIZE - sizeof(len);
         }
 
-        fifo_write(&ppp_spi.fifo_rx, (uint8_t *)&ppp_spi.transaction_rx_buffer[sizeof(len)], len);
+        fifo_write(&ppp_spi.fifo_rx, &ppp_spi.transaction_rx[sizeof(len)], len);
 
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
         ppp_spi.transaction_ready = 1;
     }
 }
@@ -195,19 +191,7 @@ static void ppp_spi_link(ppp_pcb *pcb, int err_code, void *ctx) {
 static uint32_t ppp_spi_output(ppp_pcb *pcb, const void *data, uint32_t data_size, void *ctx) {
     (void)pcb;
     (void)ctx;
-
-    const uint8_t *buffer = data;
-    uint32_t n;
-    uint32_t total = 0;
-    while(total < data_size) {
-        n = fifo_write(&ppp_spi.fifo_tx, &buffer[total], data_size - total);
-        if(n < (data_size - total)) {
-            timer_restart(&ppp_spi.timeout);
-            ppp_spi_transaction();
-        }
-        total += n;
-    }
-    return data_size;
+    return fifo_write(&ppp_spi.fifo_tx, data, data_size);
 }
 
 typedef struct {
@@ -329,7 +313,7 @@ int main() {
     ppp_spi.state = STATE_DISCONNECTED;
     fifo_init(&ppp_spi.fifo_tx);
     fifo_init(&ppp_spi.fifo_rx);
-    timer_init(&ppp_spi.timeout, 50);
+    timer_init(&ppp_spi.timeout, 10);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
 
     lwip_init();

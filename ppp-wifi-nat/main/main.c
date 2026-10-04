@@ -14,6 +14,7 @@
 #include <esp_event.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_log_buffer.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <nvs_flash.h>
@@ -29,7 +30,6 @@
 #define PPP_SPI_PIN_MISO 19
 #define PPP_SPI_PIN_CLK  18
 #define PPP_SPI_PIN_CS   5
-#define PPP_SPI_PIN_RTS  4
 
 #define BUFFER_SIZE              (32 * 1024)
 #define PPP_SPI_TRANSACTION_SIZE 1024
@@ -46,67 +46,15 @@ static const char *TAG = "app";
 static esp_netif_t *s_sta_netif;
 
 static struct {
-    uint8_t transaction_rx_buffer[PPP_SPI_TRANSACTION_SIZE];
-    uint8_t transaction_tx_buffer[PPP_SPI_TRANSACTION_SIZE];
+    uint8_t *transaction_rx;
+    uint8_t *transaction_tx;
 
-    QueueHandle_t rx_queue;
     QueueHandle_t tx_queue;
     EventGroupHandle_t event;
 
     struct netif netif;
     ppp_pcb *ppp;
 } ppp_spi;
-
-static void ppp_spi_transaction_setup(spi_slave_transaction_t *transaction) {
-    (void)transaction;
-
-    BaseType_t mustYield = pdFALSE;
-
-    uint32_t len;
-    for(len = 0; len < (PPP_SPI_TRANSACTION_SIZE - sizeof(len)); len++) {
-        if(!xQueueReceiveFromISR(ppp_spi.tx_queue,
-                                 &ppp_spi.transaction_tx_buffer[sizeof(len) + len], &mustYield)) {
-            break;
-        }
-    }
-
-    ppp_spi.transaction_tx_buffer[0] = (len & 0x000000FF) >> 0;
-    ppp_spi.transaction_tx_buffer[1] = (len & 0x0000FF00) >> 8;
-    ppp_spi.transaction_tx_buffer[2] = (len & 0x00FF0000) >> 16;
-    ppp_spi.transaction_tx_buffer[3] = (len & 0xFF000000) >> 24;
-
-    gpio_set_level(PPP_SPI_PIN_RTS, 1);
-
-    if(mustYield) {
-        portYIELD_FROM_ISR();
-    }
-}
-
-static void ppp_spi_transaction_end(spi_slave_transaction_t *transaction) {
-    (void)transaction;
-
-    uint32_t len = (((uint32_t)ppp_spi.transaction_rx_buffer[3]) << 24) |
-                   (((uint32_t)ppp_spi.transaction_rx_buffer[2]) << 16) |
-                   (((uint32_t)ppp_spi.transaction_rx_buffer[1]) << 8) |
-                   (((uint32_t)ppp_spi.transaction_rx_buffer[0]) << 0);
-
-    if(len > (PPP_SPI_TRANSACTION_SIZE - sizeof(len))) {
-        len = PPP_SPI_TRANSACTION_SIZE - sizeof(len);
-    }
-
-    BaseType_t mustYield = pdFALSE;
-
-    for(uint32_t i = 0; i < len; i++) {
-        xQueueSendFromISR(ppp_spi.rx_queue, &ppp_spi.transaction_rx_buffer[sizeof(len) + i],
-                          &mustYield);
-    }
-
-    gpio_set_level(PPP_SPI_PIN_RTS, 0);
-
-    if(mustYield) {
-        portYIELD_FROM_ISR();
-    }
-}
 
 static void ppp_spi_link(ppp_pcb *pcb, int err_code, void *ctx) {
     (void)pcb;
@@ -123,9 +71,12 @@ static void ppp_spi_link(ppp_pcb *pcb, int err_code, void *ctx) {
 static uint32_t ppp_spi_output(ppp_pcb *pcb, const void *data, u32_t len, void *ctx) {
     (void)pcb;
     (void)ctx;
-    for(uint32_t i = 0; i < len; i++) {
-        while(!xQueueSend(ppp_spi.tx_queue, &((const uint8_t *)data)[i], 1)) {
-            ESP_LOGW(TAG, "PPP SPI TX FIFO full");
+    // ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, len, ESP_LOG_WARN);
+    const uint8_t *buffer = data;
+    uint32_t total = 0;
+    while(total < len) {
+        if(xQueueSend(ppp_spi.tx_queue, &buffer[total], 1)) {
+            total++;
         }
     }
     return len;
@@ -135,21 +86,34 @@ static void ppp_spi_task_transaction(void *arg) {
     (void)arg;
     spi_slave_transaction_t transaction = {
         .length = PPP_SPI_TRANSACTION_SIZE * 8,
-        .tx_buffer = &ppp_spi.transaction_tx_buffer,
-        .rx_buffer = &ppp_spi.transaction_rx_buffer,
+        .tx_buffer = ppp_spi.transaction_tx,
+        .rx_buffer = ppp_spi.transaction_rx,
     };
+    uint32_t len;
     while(1) {
-        spi_slave_transmit(PPP_SPI_HOST, &transaction, portMAX_DELAY);
-    }
-}
-
-static void ppp_spi_task_com(void *arg) {
-    (void)arg;
-    uint8_t byte;
-    while(1) {
-        if(xQueueReceive(ppp_spi.rx_queue, &byte, portMAX_DELAY)) {
-            pppos_input(ppp_spi.ppp, &byte, 1);
+        len = 0;
+        while(xQueueReceive(ppp_spi.tx_queue, &ppp_spi.transaction_tx[sizeof(len) + len], 0) &&
+              (len < (PPP_SPI_TRANSACTION_SIZE - sizeof(len)))) {
+            len++;
         }
+
+        ppp_spi.transaction_tx[0] = (len & 0x000000FF) >> 0;
+        ppp_spi.transaction_tx[1] = (len & 0x0000FF00) >> 8;
+        ppp_spi.transaction_tx[2] = (len & 0x00FF0000) >> 16;
+        ppp_spi.transaction_tx[3] = (len & 0xFF000000) >> 24;
+
+        spi_slave_transmit(PPP_SPI_HOST, &transaction, portMAX_DELAY);
+
+        len = (((uint32_t)ppp_spi.transaction_rx[0]) << 0) |
+              (((uint32_t)ppp_spi.transaction_rx[1]) << 8) |
+              (((uint32_t)ppp_spi.transaction_rx[2]) << 16) |
+              (((uint32_t)ppp_spi.transaction_rx[3]) << 24);
+
+        if(len > (PPP_SPI_TRANSACTION_SIZE - sizeof(len))) {
+            len = PPP_SPI_TRANSACTION_SIZE - sizeof(len);
+        }
+
+        pppos_input(ppp_spi.ppp, &ppp_spi.transaction_rx[sizeof(len)], len);
     }
 }
 
@@ -176,9 +140,11 @@ static void ppp_spi_task_listen(void *arg) {
 }
 
 static void ppp_spi_init() {
-    ppp_spi.rx_queue = xQueueCreate(BUFFER_SIZE, 1);
     ppp_spi.tx_queue = xQueueCreate(BUFFER_SIZE, 1);
     ppp_spi.event = xEventGroupCreate();
+
+    ppp_spi.transaction_rx = heap_caps_malloc(PPP_SPI_TRANSACTION_SIZE, MALLOC_CAP_DMA);
+    ppp_spi.transaction_tx = heap_caps_malloc(PPP_SPI_TRANSACTION_SIZE, MALLOC_CAP_DMA);
 
     const spi_bus_config_t buscfg = {
         .mosi_io_num = PPP_SPI_PIN_MOSI,
@@ -190,27 +156,18 @@ static void ppp_spi_init() {
     };
 
     const spi_slave_interface_config_t slvcfg = {
-        .mode = 0,
+        .mode = 1,
         .spics_io_num = PPP_SPI_PIN_CS,
         .queue_size = 8,
         .flags = 0,
-        .post_setup_cb = ppp_spi_transaction_setup,
-        .post_trans_cb = ppp_spi_transaction_end,
     };
 
-    const gpio_config_t gpiocfg = {
-        .pin_bit_mask = BIT64(PPP_SPI_PIN_RTS),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-
-    spi_slave_initialize(PPP_SPI_HOST, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
-    gpio_config(&gpiocfg);
+    spi_slave_initialize(PPP_SPI_HOST, &buscfg, &slvcfg, SPI_DMA_CH1);
 
     ppp_spi.ppp = pppos_create(&ppp_spi.netif, ppp_spi_output, ppp_spi_link, NULL);
     ESP_ERROR_CHECK(ppp_spi.ppp ? ESP_OK : ESP_FAIL);
 
     xTaskCreate(ppp_spi_task_transaction, "PPP SPI transaction", 8192, NULL, 5, NULL);
-    xTaskCreate(ppp_spi_task_com, "PPP SPI com", 8192, NULL, 5, NULL);
     xTaskCreate(ppp_spi_task_listen, "PPP SPI listen", 8192, NULL, 5, NULL);
 }
 
@@ -256,7 +213,7 @@ static void wifi_sta_init() {
 
 void app_main() {
     esp_err_t r = nvs_flash_init();
-    if(r == ESP_ERR_NVS_NO_FREE_PAGES || r == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if((r == ESP_ERR_NVS_NO_FREE_PAGES) || (r == ESP_ERR_NVS_NEW_VERSION_FOUND)) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         r = nvs_flash_init();
     }
