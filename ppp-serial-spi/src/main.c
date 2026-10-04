@@ -426,11 +426,11 @@ int main() {
             case STATE_CONNECTED: {
                 ppp_spi.state = STATE_LOOP;
 
-                ip_addr_t remote;
-                IP4_ADDR(&remote, 192, 168, 0, 17);
-                lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_CLIENT, NULL,
-                                         NULL);
-                // lwiperf_start_tcp_server_default(NULL, NULL);
+                // ip_addr_t remote;
+                // IP4_ADDR(&remote, 192, 168, 0, 17);
+                // lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_CLIENT, NULL,
+                //                          NULL);
+                lwiperf_start_tcp_server_default(NULL, NULL);
             } break;
             case STATE_LOOP: {
 

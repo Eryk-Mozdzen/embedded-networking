@@ -50,6 +50,7 @@ static struct {
     uint8_t *transaction_tx;
 
     QueueHandle_t tx_queue;
+    QueueHandle_t rx_queue;
     EventGroupHandle_t event;
 
     struct netif netif;
@@ -113,7 +114,23 @@ static void ppp_spi_task_transaction(void *arg) {
             len = PPP_SPI_TRANSACTION_SIZE - sizeof(len);
         }
 
-        pppos_input(ppp_spi.ppp, &ppp_spi.transaction_rx[sizeof(len)], len);
+        uint32_t total = 0;
+        while(total < len) {
+            if(xQueueSend(ppp_spi.rx_queue, &ppp_spi.transaction_rx[sizeof(len) + total],
+                          portMAX_DELAY)) {
+                total++;
+            }
+        }
+    }
+}
+
+static void ppp_spi_task_com(void *arg) {
+    (void)arg;
+    uint8_t byte;
+    while(1) {
+        if(xQueueReceive(ppp_spi.rx_queue, &byte, portMAX_DELAY)) {
+            pppos_input(ppp_spi.ppp, &byte, 1);
+        }
     }
 }
 
@@ -141,6 +158,7 @@ static void ppp_spi_task_listen(void *arg) {
 
 static void ppp_spi_init() {
     ppp_spi.tx_queue = xQueueCreate(BUFFER_SIZE, 1);
+    ppp_spi.rx_queue = xQueueCreate(BUFFER_SIZE, 1);
     ppp_spi.event = xEventGroupCreate();
 
     ppp_spi.transaction_rx = heap_caps_malloc(PPP_SPI_TRANSACTION_SIZE, MALLOC_CAP_DMA);
@@ -167,7 +185,8 @@ static void ppp_spi_init() {
     ppp_spi.ppp = pppos_create(&ppp_spi.netif, ppp_spi_output, ppp_spi_link, NULL);
     ESP_ERROR_CHECK(ppp_spi.ppp ? ESP_OK : ESP_FAIL);
 
-    xTaskCreate(ppp_spi_task_transaction, "PPP SPI transaction", 8192, NULL, 5, NULL);
+    xTaskCreate(ppp_spi_task_transaction, "PPP SPI transaction", 8192, NULL, 7, NULL);
+    xTaskCreate(ppp_spi_task_com, "PPP SPI com", 8192, NULL, 6, NULL);
     xTaskCreate(ppp_spi_task_listen, "PPP SPI listen", 8192, NULL, 5, NULL);
 }
 
