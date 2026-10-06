@@ -12,186 +12,247 @@
 #include "fifo.h"
 #include "timer.h"
 
-typedef enum {
-    STATE_DISCONNECTED,
-    STATE_CONNECTING,
-    STATE_CONNECTED,
-    STATE_LOOP,
-} state_t;
+#define PPP_SPI_TRANSACTION_SIZE 1024
 
+extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 extern SPI_HandleTypeDef hspi2;
 
-static struct {
+typedef struct {
+    UART_HandleTypeDef *huart;
     fifo_t fifo_tx;
     fifo_t fifo_rx;
     timer_t timeout_tx;
     timer_t timeout_rx;
-    state_t state;
+    uint8_t dma_tx_buffer[8192];
+    uint8_t dma_rx_buffer[8192];
     volatile uint8_t dma_tx_ready;
-    volatile uint8_t dma_tx_buffer[8192];
     volatile uint32_t dma_rx_pos;
-    volatile uint8_t dma_rx_buffer[8192];
-} ppp_uart;
+} ppp_uart_t;
+
+typedef struct {
+    SPI_HandleTypeDef *hspi;
+    GPIO_TypeDef *GPIOx;
+    uint16_t GPIO_Pin;
+    fifo_t fifo_tx;
+    fifo_t fifo_rx;
+    timer_t timeout;
+    uint8_t transaction_tx[PPP_SPI_TRANSACTION_SIZE];
+    uint8_t transaction_rx[PPP_SPI_TRANSACTION_SIZE];
+    volatile uint8_t transaction_ready;
+} ppp_spi_t;
+
+static ppp_uart_t ppp_uart1;
+static ppp_uart_t ppp_uart2;
+static ppp_spi_t ppp_spi2;
 
 void SystemClock_Config();
 void MX_GPIO_Init();
 void MX_DMA_Init();
+void MX_USART1_UART_Init();
 void MX_USART2_UART_Init();
 void MX_SPI2_Init();
 
-static void ppp_uart_data_send() {
+static void ppp_uart_data_send(ppp_uart_t *ppp_uart) {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
-    if(ppp_uart.dma_tx_ready) {
-        const uint32_t len = fifo_read(&ppp_uart.fifo_tx, (uint8_t *)ppp_uart.dma_tx_buffer,
-                                       sizeof(ppp_uart.dma_tx_buffer));
+    if(ppp_uart->dma_tx_ready) {
+        const uint32_t len =
+            fifo_read(&ppp_uart->fifo_tx, ppp_uart->dma_tx_buffer, sizeof(ppp_uart->dma_tx_buffer));
         if(len > 0) {
-            ppp_uart.dma_tx_ready = 0;
-            HAL_UART_Transmit_DMA(&huart2, (uint8_t *)ppp_uart.dma_tx_buffer, len);
+            ppp_uart->dma_tx_ready = 0;
+            HAL_UART_Transmit_DMA(ppp_uart->huart, ppp_uart->dma_tx_buffer, len);
         }
     }
 
     __set_PRIMASK(primask);
 }
 
-static void ppp_uart_data_recv() {
+static void ppp_uart_data_recv(ppp_uart_t *ppp_uart) {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
-    const uint32_t pos = sizeof(ppp_uart.dma_rx_buffer) - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+    const uint32_t pos =
+        sizeof(ppp_uart->dma_rx_buffer) - __HAL_DMA_GET_COUNTER(ppp_uart->huart->hdmarx);
 
-    if(pos != ppp_uart.dma_rx_pos) {
-        if(pos > ppp_uart.dma_rx_pos) {
-            fifo_write(&ppp_uart.fifo_rx, (uint8_t *)&ppp_uart.dma_rx_buffer[ppp_uart.dma_rx_pos],
-                       pos - ppp_uart.dma_rx_pos);
+    if(pos != ppp_uart->dma_rx_pos) {
+        if(pos > ppp_uart->dma_rx_pos) {
+            fifo_write(&ppp_uart->fifo_rx, &ppp_uart->dma_rx_buffer[ppp_uart->dma_rx_pos],
+                       pos - ppp_uart->dma_rx_pos);
         } else {
-            fifo_write(&ppp_uart.fifo_rx, (uint8_t *)&ppp_uart.dma_rx_buffer[ppp_uart.dma_rx_pos],
-                       sizeof(ppp_uart.dma_rx_buffer) - ppp_uart.dma_rx_pos);
+            fifo_write(&ppp_uart->fifo_rx, &ppp_uart->dma_rx_buffer[ppp_uart->dma_rx_pos],
+                       sizeof(ppp_uart->dma_rx_buffer) - ppp_uart->dma_rx_pos);
             if(pos > 0) {
-                fifo_write(&ppp_uart.fifo_rx, (uint8_t *)ppp_uart.dma_rx_buffer, pos);
+                fifo_write(&ppp_uart->fifo_rx, ppp_uart->dma_rx_buffer, pos);
             }
         }
-        ppp_uart.dma_rx_pos = pos;
+        ppp_uart->dma_rx_pos = pos;
     }
 
     __set_PRIMASK(primask);
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-    if(huart == &huart2) {
-        ppp_uart.dma_tx_ready = 1;
+    if(huart == ppp_uart1.huart) {
+        ppp_uart1.dma_tx_ready = 1;
+    } else if(huart == ppp_uart2.huart) {
+        ppp_uart2.dma_tx_ready = 1;
     }
 }
 
 void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart) {
-    if(huart == &huart2) {
-        timer_restart(&ppp_uart.timeout_rx);
-        ppp_uart_data_recv();
+    if(huart == ppp_uart1.huart) {
+        timer_restart(&ppp_uart1.timeout_rx);
+        ppp_uart_data_recv(&ppp_uart1);
+    } else if(huart == ppp_uart2.huart) {
+        timer_restart(&ppp_uart2.timeout_rx);
+        ppp_uart_data_recv(&ppp_uart2);
     }
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if(huart == &huart2) {
-        timer_restart(&ppp_uart.timeout_rx);
-        ppp_uart_data_recv();
+    if(huart == ppp_uart1.huart) {
+        timer_restart(&ppp_uart1.timeout_rx);
+        ppp_uart_data_recv(&ppp_uart1);
+    } else if(huart == ppp_uart2.huart) {
+        timer_restart(&ppp_uart2.timeout_rx);
+        ppp_uart_data_recv(&ppp_uart2);
     }
 }
 
 static void ppp_uart_link(ppp_pcb *pcb, int err_code, void *ctx) {
     (void)pcb;
-    (void)ctx;
+
+    // ppp_uart_t *ppp_uart = ctx;
 
     if(err_code == PPPERR_NONE) {
-        if(ppp_uart.state == STATE_CONNECTING) {
-            ppp_uart.state = STATE_CONNECTED;
-        }
     }
 }
 
 static uint32_t ppp_uart_output(ppp_pcb *pcb, const void *data, uint32_t data_size, void *ctx) {
     (void)pcb;
-    (void)ctx;
+
+    ppp_uart_t *ppp_uart = ctx;
 
     const uint8_t *buffer = data;
     uint32_t n;
     uint32_t total = 0;
     while(total < data_size) {
-        n = fifo_write(&ppp_uart.fifo_tx, &buffer[total], data_size - total);
+        n = fifo_write(&ppp_uart->fifo_tx, &buffer[total], data_size - total);
         if(n < (data_size - total)) {
-            timer_restart(&ppp_uart.timeout_tx);
-            ppp_uart_data_send();
+            timer_restart(&ppp_uart->timeout_tx);
+            ppp_uart_data_send(ppp_uart);
         }
         total += n;
     }
     return data_size;
 }
 
-#define PPP_SPI_TRANSACTION_SIZE 1024
+static void ppp_uart_init(ppp_uart_t *ppp_uart, UART_HandleTypeDef *huart) {
+    ppp_uart->huart = huart;
+    ppp_uart->dma_tx_ready = 1;
+    ppp_uart->dma_rx_pos = 0;
+    fifo_init(&ppp_uart->fifo_tx);
+    fifo_init(&ppp_uart->fifo_rx);
+    timer_init(&ppp_uart->timeout_tx, 10);
+    timer_init(&ppp_uart->timeout_rx, 10);
+    HAL_UART_Receive_DMA(ppp_uart->huart, ppp_uart->dma_rx_buffer, sizeof(ppp_uart->dma_rx_buffer));
+}
 
-static struct {
-    fifo_t fifo_tx;
-    fifo_t fifo_rx;
-    timer_t timeout;
-    state_t state;
-    uint8_t transaction_tx[PPP_SPI_TRANSACTION_SIZE];
-    uint8_t transaction_rx[PPP_SPI_TRANSACTION_SIZE];
-    volatile uint8_t transaction_ready;
-} ppp_spi;
+static void ppp_uart_loop(ppp_uart_t *ppp_uart, ppp_pcb *ppp) {
+    if(timer_timeout(&ppp_uart->timeout_tx)) {
+        timer_reset(&ppp_uart->timeout_tx);
+        ppp_uart_data_send(ppp_uart);
+    }
 
-static void ppp_spi_transaction() {
-    if(ppp_spi.transaction_ready) {
-        ppp_spi.transaction_ready = 0;
+    if(timer_timeout(&ppp_uart->timeout_rx)) {
+        timer_reset(&ppp_uart->timeout_rx);
+        ppp_uart_data_recv(ppp_uart);
+    }
 
-        const uint32_t len = fifo_read(&ppp_spi.fifo_tx, &ppp_spi.transaction_tx[sizeof(len)],
+    uint8_t buffer_rx[128];
+    const uint32_t buffer_len = fifo_read(&ppp_uart->fifo_rx, buffer_rx, sizeof(buffer_rx));
+    if(buffer_len > 0) {
+        pppos_input(ppp, buffer_rx, buffer_len);
+    }
+}
+
+static void ppp_spi_transaction(ppp_spi_t *ppp_spi) {
+    if(ppp_spi->transaction_ready) {
+        ppp_spi->transaction_ready = 0;
+
+        const uint32_t len = fifo_read(&ppp_spi->fifo_tx, &ppp_spi->transaction_tx[sizeof(len)],
                                        PPP_SPI_TRANSACTION_SIZE - sizeof(len));
 
-        ppp_spi.transaction_tx[0] = (len & 0x000000FF) >> 0;
-        ppp_spi.transaction_tx[1] = (len & 0x0000FF00) >> 8;
-        ppp_spi.transaction_tx[2] = (len & 0x00FF0000) >> 16;
-        ppp_spi.transaction_tx[3] = (len & 0xFF000000) >> 24;
+        ppp_spi->transaction_tx[0] = (len & 0x000000FF) >> 0;
+        ppp_spi->transaction_tx[1] = (len & 0x0000FF00) >> 8;
+        ppp_spi->transaction_tx[2] = (len & 0x00FF0000) >> 16;
+        ppp_spi->transaction_tx[3] = (len & 0xFF000000) >> 24;
 
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
-        HAL_SPI_TransmitReceive_DMA(&hspi2, ppp_spi.transaction_tx, ppp_spi.transaction_rx,
+        HAL_GPIO_WritePin(ppp_spi->GPIOx, ppp_spi->GPIO_Pin, GPIO_PIN_RESET);
+        HAL_SPI_TransmitReceive_DMA(ppp_spi->hspi, ppp_spi->transaction_tx, ppp_spi->transaction_rx,
                                     PPP_SPI_TRANSACTION_SIZE);
     }
 }
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
-    if(hspi == &hspi2) {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+    if(hspi == ppp_spi2.hspi) {
+        HAL_GPIO_WritePin(ppp_spi2.GPIOx, ppp_spi2.GPIO_Pin, GPIO_PIN_SET);
 
-        uint32_t len = (((uint32_t)ppp_spi.transaction_rx[0]) << 0) |
-                       (((uint32_t)ppp_spi.transaction_rx[1]) << 8) |
-                       (((uint32_t)ppp_spi.transaction_rx[2]) << 16) |
-                       (((uint32_t)ppp_spi.transaction_rx[3]) << 24);
+        uint32_t len = (((uint32_t)ppp_spi2.transaction_rx[0]) << 0) |
+                       (((uint32_t)ppp_spi2.transaction_rx[1]) << 8) |
+                       (((uint32_t)ppp_spi2.transaction_rx[2]) << 16) |
+                       (((uint32_t)ppp_spi2.transaction_rx[3]) << 24);
 
         if(len > (PPP_SPI_TRANSACTION_SIZE - sizeof(len))) {
             len = PPP_SPI_TRANSACTION_SIZE - sizeof(len);
         }
 
-        fifo_write(&ppp_spi.fifo_rx, &ppp_spi.transaction_rx[sizeof(len)], len);
+        fifo_write(&ppp_spi2.fifo_rx, &ppp_spi2.transaction_rx[sizeof(len)], len);
 
-        ppp_spi.transaction_ready = 1;
+        ppp_spi2.transaction_ready = 1;
     }
 }
 
 static void ppp_spi_link(ppp_pcb *pcb, int err_code, void *ctx) {
     (void)pcb;
-    (void)ctx;
+
+    // ppp_spi_t *ppp_spi = ctx;
 
     if(err_code == PPPERR_NONE) {
-        if(ppp_spi.state == STATE_CONNECTING) {
-            ppp_spi.state = STATE_CONNECTED;
-        }
     }
 }
 
 static uint32_t ppp_spi_output(ppp_pcb *pcb, const void *data, uint32_t data_size, void *ctx) {
     (void)pcb;
-    (void)ctx;
-    return fifo_write(&ppp_spi.fifo_tx, data, data_size);
+    ppp_spi_t *ppp_spi = ctx;
+    return fifo_write(&ppp_spi->fifo_tx, data, data_size);
+}
+
+static void
+ppp_spi_init(ppp_spi_t *ppp_spi, SPI_HandleTypeDef *hspi, GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
+    ppp_spi->hspi = hspi;
+    ppp_spi->GPIOx = GPIOx;
+    ppp_spi->GPIO_Pin = GPIO_Pin;
+    ppp_spi->transaction_ready = 1;
+    fifo_init(&ppp_spi->fifo_tx);
+    fifo_init(&ppp_spi->fifo_rx);
+    timer_init(&ppp_spi->timeout, 10);
+    HAL_GPIO_WritePin(ppp_spi->GPIOx, ppp_spi->GPIO_Pin, GPIO_PIN_SET);
+}
+
+static void ppp_spi_loop(ppp_spi_t *ppp_spi, ppp_pcb *ppp) {
+    if(timer_timeout(&ppp_spi->timeout)) {
+        timer_reset(&ppp_spi->timeout);
+        ppp_spi_transaction(ppp_spi);
+    }
+
+    uint8_t buffer_rx[128];
+    const uint32_t buffer_len = fifo_read(&ppp_spi->fifo_rx, buffer_rx, sizeof(buffer_rx));
+    if(buffer_len > 0) {
+        pppos_input(ppp, buffer_rx, buffer_len);
+    }
 }
 
 typedef struct {
@@ -296,45 +357,33 @@ int main() {
     SystemClock_Config();
     MX_GPIO_Init();
     MX_DMA_Init();
+    MX_USART1_UART_Init();
     MX_USART2_UART_Init();
     MX_SPI2_Init();
 
-    ppp_uart.dma_tx_ready = 1;
-    ppp_uart.dma_rx_pos = 0;
-    ppp_uart.state = STATE_DISCONNECTED;
-    fifo_init(&ppp_uart.fifo_tx);
-    fifo_init(&ppp_uart.fifo_rx);
-    timer_init(&ppp_uart.timeout_tx, 10);
-    timer_init(&ppp_uart.timeout_rx, 10);
-    HAL_UART_Receive_DMA(&huart2, (uint8_t *)&ppp_uart.dma_rx_buffer,
-                         sizeof(ppp_uart.dma_rx_buffer));
-
-    ppp_spi.transaction_ready = 1;
-    ppp_spi.state = STATE_DISCONNECTED;
-    fifo_init(&ppp_spi.fifo_tx);
-    fifo_init(&ppp_spi.fifo_rx);
-    timer_init(&ppp_spi.timeout, 10);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+    ppp_uart_init(&ppp_uart1, &huart1);
+    ppp_uart_init(&ppp_uart2, &huart2);
+    ppp_spi_init(&ppp_spi2, &hspi2, GPIOB, GPIO_PIN_12);
 
     lwip_init();
 
     struct netif netif1 = {0};
-    ppp_pcb *ppp1 = pppos_create(&netif1, ppp_uart_output, ppp_uart_link, NULL);
-
     struct netif netif2 = {0};
-    ppp_pcb *ppp2 = pppos_create(&netif2, ppp_spi_output, ppp_spi_link, NULL);
+    struct netif netif3 = {0};
+
+    ppp_pcb *ppp1 = pppos_create(&netif1, ppp_uart_output, ppp_uart_link, &ppp_uart1);
+    ppp_pcb *ppp2 = pppos_create(&netif2, ppp_uart_output, ppp_uart_link, &ppp_uart2);
+    ppp_pcb *ppp3 = pppos_create(&netif3, ppp_spi_output, ppp_spi_link, &ppp_spi2);
 
     ppp_set_default(ppp2);
 
-    uint8_t buffer_rx[128];
-    uint32_t buffer_len;
+    ppp_connect(ppp1, 0);
+    ppp_connect(ppp2, 0);
+    ppp_connect(ppp3, 0);
 
     uint32_t blink_counter = 1;
     timer_t blink;
     timer_init(&blink, 250);
-
-    // timer_t stats;
-    // timer_init(&stats, 1000);
 
     telnet_t telnet = {0};
     struct tcp_pcb *telnet_pcb = tcp_new();
@@ -343,21 +392,7 @@ int main() {
     tcp_arg(telnet_pcb, &telnet);
     tcp_accept(telnet_pcb, telnet_accept);
 
-    // CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    // DWT->CYCCNT = 0;
-    // DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-    // uint32_t t0 = 0;
-    // uint32_t t1 = 0;
-    // uint32_t loop_max_us = 0;
-
     while(1) {
-        // t1 = DWT->CYCCNT;
-        // uint32_t dt_us = (t1 - t0) / (SystemCoreClock / 1000000);
-        // if(dt_us > loop_max_us) {
-        //     loop_max_us = dt_us;
-        // }
-        // t0 = DWT->CYCCNT;
-
         if(timer_timeout(&blink)) {
             timer_reset(&blink);
             HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, blink_counter & 0x01);
@@ -367,85 +402,9 @@ int main() {
             blink_counter = ((blink_counter << 1) | (blink_counter >> 3)) & 0x0F;
         }
 
-        // if(timer_timeout(&stats)) {
-        //     timer_reset(&stats);
-        //     stats_display();
-        //     printf("main loop max iteration time: %lu us\n", (unsigned long)loop_max_us);
-        //     loop_max_us = 0;
-        // }
-
-        switch(ppp_uart.state) {
-            case STATE_DISCONNECTED: {
-                ppp_uart.state = STATE_CONNECTING;
-                ppp_connect(ppp1, 0);
-            } break;
-            case STATE_CONNECTING: {
-
-            } break;
-            case STATE_CONNECTED: {
-                ppp_uart.state = STATE_LOOP;
-                // printf("out ACCM (what we escape when sending): 0x%08lX\n",
-                //        (unsigned long)ppp->lcp_gotoptions.asyncmap);
-                // printf("in  ACCM (what peer escapes when sending to us): 0x%08lX\n",
-                //        (unsigned long)ppp->lcp_hisoptions.asyncmap);
-
-                // ip_addr_t remote;
-                // IP4_ADDR(&remote, 192, 168, 4, 2);
-                // lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_CLIENT, NULL,
-                //                          NULL);
-                // lwiperf_start_tcp_server_default(NULL, NULL);
-            } break;
-            case STATE_LOOP: {
-
-            } break;
-        }
-
-        if(timer_timeout(&ppp_uart.timeout_tx)) {
-            timer_reset(&ppp_uart.timeout_tx);
-            ppp_uart_data_send();
-        }
-
-        if(timer_timeout(&ppp_uart.timeout_rx)) {
-            timer_reset(&ppp_uart.timeout_rx);
-            ppp_uart_data_recv();
-        }
-
-        buffer_len = fifo_read(&ppp_uart.fifo_rx, buffer_rx, sizeof(buffer_rx));
-        if(buffer_len > 0) {
-            pppos_input(ppp1, buffer_rx, buffer_len);
-        }
-
-        switch(ppp_spi.state) {
-            case STATE_DISCONNECTED: {
-                ppp_spi.state = STATE_CONNECTING;
-                ppp_connect(ppp2, 0);
-            } break;
-            case STATE_CONNECTING: {
-
-            } break;
-            case STATE_CONNECTED: {
-                ppp_spi.state = STATE_LOOP;
-
-                // ip_addr_t remote;
-                // IP4_ADDR(&remote, 192, 168, 0, 17);
-                // lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_CLIENT, NULL,
-                //                          NULL);
-                lwiperf_start_tcp_server_default(NULL, NULL);
-            } break;
-            case STATE_LOOP: {
-
-            } break;
-        }
-
-        if(timer_timeout(&ppp_spi.timeout)) {
-            timer_reset(&ppp_spi.timeout);
-            ppp_spi_transaction();
-        }
-
-        buffer_len = fifo_read(&ppp_spi.fifo_rx, buffer_rx, sizeof(buffer_rx));
-        if(buffer_len > 0) {
-            pppos_input(ppp2, buffer_rx, buffer_len);
-        }
+        ppp_uart_loop(&ppp_uart1, ppp1);
+        ppp_uart_loop(&ppp_uart2, ppp2);
+        ppp_spi_loop(&ppp_spi2, ppp3);
 
         sys_check_timeouts();
     }
