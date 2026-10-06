@@ -4,6 +4,7 @@
 
 ```
 sudo pppd /dev/ttyUSB0 921600 192.168.7.1:192.168.7.2 local noauth debug nodetach nocrtscts
+sudo pppd /dev/ttyAMA0 921600 noauth local nocrtscts debug nodetach
 ```
 
 ```

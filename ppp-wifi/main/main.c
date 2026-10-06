@@ -185,6 +185,9 @@ static void ppp_spi_init() {
     ppp_spi.ppp = pppos_create(&ppp_spi.netif, ppp_spi_output, ppp_spi_link, NULL);
     ESP_ERROR_CHECK(ppp_spi.ppp ? ESP_OK : ESP_FAIL);
 
+    // esp_netif_set_default_netif(&ppp_spi.netif);
+    ppp_set_default(ppp_spi.ppp);
+
     xTaskCreate(ppp_spi_task_transaction, "PPP SPI transaction", 8192, NULL, 7, NULL);
     xTaskCreate(ppp_spi_task_com, "PPP SPI com", 8192, NULL, 6, NULL);
     xTaskCreate(ppp_spi_task_listen, "PPP SPI listen", 8192, NULL, 5, NULL);
@@ -206,7 +209,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         ip_event_got_ip_t *e = data;
         ESP_LOGI(TAG, "STA got IP " IPSTR ", gw " IPSTR, IP2STR(&e->ip_info.ip),
                  IP2STR(&e->ip_info.gw));
-        esp_netif_set_default_netif(s_sta_netif);
+        // esp_netif_set_default_netif(s_sta_netif);
     }
 }
 

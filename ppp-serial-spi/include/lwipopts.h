@@ -13,6 +13,10 @@
 #define LWIP_IPV4         1
 #define LWIP_SINGLE_NETIF 0
 
+#define IP_FORWARD    1
+#define IP_REASSEMBLY 1
+#define IP_FRAG       1
+
 #define MEMP_NUM_TCP_PCB 8
 #define MEMP_NUM_TCP_SEG 128
 #define MEMP_NUM_PPP_PCB 4
