@@ -370,7 +370,7 @@ int main() {
     ppp_pcb *ppp2 = pppos_create(&netif2, uart_output, uart_link, &uart2);
     ppp_pcb *ppp3 = pppos_create(&netif3, spi_output, spi_link, &spi2);
 
-    ppp_set_default(ppp2);
+    netif_set_default(&netif2);
 
     ppp_connect(ppp1, 0);
     ppp_connect(ppp2, 0);
