@@ -12,7 +12,7 @@
 #include "fifo.h"
 #include "timer.h"
 
-#define PPP_SPI_TRANSACTION_SIZE 1024
+#define SPI_TRANSACTION_SIZE 1024
 
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
@@ -37,8 +37,8 @@ typedef struct {
     fifo_t fifo_tx;
     fifo_t fifo_rx;
     timer_t timeout;
-    uint8_t transaction_tx[PPP_SPI_TRANSACTION_SIZE];
-    uint8_t transaction_rx[PPP_SPI_TRANSACTION_SIZE];
+    uint8_t transaction_tx[SPI_TRANSACTION_SIZE];
+    uint8_t transaction_rx[SPI_TRANSACTION_SIZE];
     volatile uint8_t transaction_ready;
 } spi_t;
 
@@ -181,7 +181,7 @@ static void spi_transaction(spi_t *spi) {
         spi->transaction_ready = 0;
 
         const uint32_t len = fifo_read(&spi->fifo_tx, &spi->transaction_tx[sizeof(len)],
-                                       PPP_SPI_TRANSACTION_SIZE - sizeof(len));
+                                       SPI_TRANSACTION_SIZE - sizeof(len));
 
         spi->transaction_tx[0] = (len & 0x000000FF) >> 0;
         spi->transaction_tx[1] = (len & 0x0000FF00) >> 8;
@@ -190,7 +190,7 @@ static void spi_transaction(spi_t *spi) {
 
         HAL_GPIO_WritePin(spi->GPIOx, spi->GPIO_Pin, GPIO_PIN_RESET);
         HAL_SPI_TransmitReceive_DMA(spi->hspi, spi->transaction_tx, spi->transaction_rx,
-                                    PPP_SPI_TRANSACTION_SIZE);
+                                    SPI_TRANSACTION_SIZE);
     }
 }
 
@@ -202,8 +202,8 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
             (((uint32_t)spi2.transaction_rx[0]) << 0) | (((uint32_t)spi2.transaction_rx[1]) << 8) |
             (((uint32_t)spi2.transaction_rx[2]) << 16) | (((uint32_t)spi2.transaction_rx[3]) << 24);
 
-        if(len > (PPP_SPI_TRANSACTION_SIZE - sizeof(len))) {
-            len = PPP_SPI_TRANSACTION_SIZE - sizeof(len);
+        if(len > (SPI_TRANSACTION_SIZE - sizeof(len))) {
+            len = SPI_TRANSACTION_SIZE - sizeof(len);
         }
 
         fifo_write(&spi2.fifo_rx, &spi2.transaction_rx[sizeof(len)], len);
