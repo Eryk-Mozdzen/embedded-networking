@@ -2,3 +2,4 @@
 build
 **/cubemx/*
 !**/cubemx.ioc
+sdkconfig.old
