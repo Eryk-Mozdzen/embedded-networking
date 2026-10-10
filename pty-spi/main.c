@@ -26,7 +26,7 @@
 #define PTY            "/dev/ttySPI0"
 #define SPI            "/dev/spidev0.0"
 #define SPI_CLOCK_HZ   8000000UL
-#define SPI_GAP_NS     10000000UL
+#define SPI_GAP_NS     2000000UL
 #define SPI_QUEUE_SIZE (32UL * 1024UL)
 
 static int keepalive;
@@ -94,6 +94,14 @@ static void *spi_thread(void *arg) {
             transaction_tx[1] = (len & 0x0000FF00) >> 8;
             transaction_tx[2] = (len & 0x00FF0000) >> 16;
             transaction_tx[3] = (len & 0xFF000000) >> 24;
+
+            // if(len > 0) {
+            //     printf("send %u: ", len);
+            //     for(uint32_t i = 0; i < len; i++) {
+            //         printf("%02X ", transaction_tx[TRANSACTION_SIZE_HEADER + i]);
+            //     }
+            //     printf("\n");
+            // }
         }
 
         res = ioctl(spi, SPI_IOC_MESSAGE(1), &transaction);
@@ -109,7 +117,13 @@ static void *spi_thread(void *arg) {
             len = (((uint32_t)transaction_rx[0]) << 0) | (((uint32_t)transaction_rx[1]) << 8) |
                   (((uint32_t)transaction_rx[2]) << 16) | (((uint32_t)transaction_rx[3]) << 24);
 
-            if(len <= TRANSACTION_SIZE_PAYLOAD_MAX) {
+            if((len > 0) && (len <= TRANSACTION_SIZE_PAYLOAD_MAX)) {
+                // printf("recv %u: ", len);
+                // for(uint32_t i = 0; i < len; i++) {
+                //     printf("%02X ", transaction_rx[TRANSACTION_SIZE_HEADER + i]);
+                // }
+                // printf("\n");
+
                 queue_write(spi_rx, &transaction_rx[TRANSACTION_SIZE_HEADER], len, QUEUE_NO_WAIT);
             }
         } else if(errno != EINTR) {
@@ -282,10 +296,6 @@ int main(void) {
         started[i] = true;
     }
 
-    // pthread_create(&th1, NULL, spi_thread, NULL);
-    // pthread_create(&th2, NULL, pty_thread_read, NULL);
-    // pthread_create(&th3, NULL, pty_thread_write, NULL);
-
     const struct timespec ts = {0, 100000000L};
     while(running) {
         if(sigtimedwait(&set, NULL, &ts) > 0) {
@@ -295,10 +305,6 @@ int main(void) {
 
     queue_close(spi_tx);
     queue_close(spi_rx);
-
-    // pthread_join(th1, NULL);
-    // pthread_join(th2, NULL);
-    // pthread_join(th3, NULL);
 
     for(int i = 0; i < 3; i++) {
         if(started[i]) {
