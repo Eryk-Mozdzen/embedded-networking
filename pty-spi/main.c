@@ -27,7 +27,7 @@
 #define PTY            "/dev/ttySPI0"
 #define SPI            "/dev/spidev0.0"
 #define SPI_CLOCK_HZ   8000000UL
-#define SPI_GAP_NS     1000000UL
+#define SPI_GAP_NS     100000UL
 #define SPI_QUEUE_SIZE (32UL * 1024UL)
 
 #define READY_GPIO       25

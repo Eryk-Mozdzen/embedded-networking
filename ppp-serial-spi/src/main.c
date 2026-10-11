@@ -182,8 +182,6 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     uint32_t len;
 
     if(hspi == spi2.hspi) {
-        HAL_GPIO_WritePin(spi2.GPIOx, spi2.GPIO_Pin, GPIO_PIN_RESET);
-
         timer_restart(&spi2.timeout);
 
         len = fifo_read(&spi2.fifo_tx, &spi2.transaction_tx[SPI_TRANSACTION_SIZE_HEADER],
@@ -209,8 +207,13 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
 
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi) {
     if(hspi == spi2.hspi) {
-        HAL_GPIO_WritePin(spi2.GPIOx, spi2.GPIO_Pin, GPIO_PIN_RESET);
         HAL_SPI_Abort(spi2.hspi);
+    }
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if(GPIO_Pin == GPIO_PIN_12) {
+        HAL_GPIO_WritePin(spi2.GPIOx, spi2.GPIO_Pin, GPIO_PIN_RESET);
     }
 }
 
@@ -239,8 +242,15 @@ static void spi_init(spi_t *spi, SPI_HandleTypeDef *hspi, GPIO_TypeDef *GPIOx, u
     spi->GPIO_Pin = GPIO_Pin;
     fifo_init(&spi->fifo_tx);
     fifo_init(&spi->fifo_rx);
-    timer_init(&spi->timeout, 2);
-    HAL_GPIO_WritePin(spi->GPIOx, spi->GPIO_Pin, GPIO_PIN_RESET);
+    timer_init(&spi->timeout, 10);
+
+    spi->transaction_tx[0] = 0;
+    spi->transaction_tx[1] = 0;
+    spi->transaction_tx[2] = 0;
+    spi->transaction_tx[3] = 0;
+    HAL_SPI_TransmitReceive_DMA(spi->hspi, spi2.transaction_tx, spi2.transaction_rx,
+                                SPI_TRANSACTION_SIZE);
+    HAL_GPIO_WritePin(spi->GPIOx, spi->GPIO_Pin, GPIO_PIN_SET);
 }
 
 static void spi_loop(spi_t *spi, ppp_pcb *ppp) {
