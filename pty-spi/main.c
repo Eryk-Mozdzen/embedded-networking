@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/gpio.h>
 #include <linux/spi/spidev.h>
 #include <poll.h>
 #include <signal.h>
@@ -26,14 +27,27 @@
 #define PTY            "/dev/ttySPI0"
 #define SPI            "/dev/spidev0.0"
 #define SPI_CLOCK_HZ   8000000UL
-#define SPI_GAP_NS     2000000UL
+#define SPI_GAP_NS     1000000UL
 #define SPI_QUEUE_SIZE (32UL * 1024UL)
+
+#define READY_GPIO       25
+#define READY_CHIP_LABEL "rp1"
 
 static int keepalive;
 static int pty;
+static int ready;
 static queue_t *spi_tx;
 static queue_t *spi_rx;
 static atomic_int running = 1;
+
+static bool ready_level(void) {
+    struct gpio_v2_line_values v = {.bits = 0, .mask = 1};
+    if(ioctl(ready, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) < 0) {
+        perror("GPIO_V2_LINE_GET_VALUES_IOCTL");
+        return false;
+    }
+    return (v.bits & 1);
+}
 
 static void *spi_thread(void *arg) {
     (void)arg;
@@ -66,6 +80,46 @@ static void *spi_thread(void *arg) {
         return NULL;
     }
 
+    int chip = -1;
+    for(int i = 0; (i < 16) && (chip < 0); i++) {
+        char path[32];
+        snprintf(path, sizeof path, "/dev/gpiochip%d", i);
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if(fd < 0) {
+            continue;
+        }
+        struct gpiochip_info info;
+        if(ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, &info) == 0 &&
+           strstr(info.label, READY_CHIP_LABEL) != NULL) {
+            chip = fd;
+        } else {
+            close(fd);
+        }
+    }
+    if(chip < 0) {
+        fprintf(stderr, "gpiochip with label '%s' not found\n", READY_CHIP_LABEL);
+        close(spi);
+        running = 0;
+        return NULL;
+    }
+
+    struct gpio_v2_line_request req;
+    memset(&req, 0, sizeof req);
+    req.offsets[0] = READY_GPIO;
+    req.num_lines = 1;
+    strncpy(req.consumer, "spi-ready", sizeof req.consumer - 1);
+    req.config.flags = GPIO_V2_LINE_FLAG_INPUT | GPIO_V2_LINE_FLAG_EDGE_RISING;
+    int r = ioctl(chip, GPIO_V2_GET_LINE_IOCTL, &req);
+    close(chip);
+    if(r < 0) {
+        perror("GPIO_V2_GET_LINE_IOCTL");
+        close(spi);
+        running = 0;
+        return NULL;
+    }
+    fcntl(req.fd, F_SETFL, fcntl(req.fd, F_GETFL) | O_NONBLOCK);
+    ready = req.fd;
+
     uint8_t transaction_tx[TRANSACTION_SIZE];
     uint8_t transaction_rx[TRANSACTION_SIZE];
     uint32_t len;
@@ -83,6 +137,19 @@ static void *spi_thread(void *arg) {
     int res = 0;
 
     while(running) {
+        while(running && !ready_level()) {
+            struct pollfd pf = {ready, POLLIN, 0};
+            poll(&pf, 1, 50);
+
+            struct gpio_v2_line_event ev;
+            while(read(ready, &ev, sizeof ev) > 0) {
+            }
+        }
+
+        if(!running) {
+            break;
+        }
+
         if(res >= 0) {
             memset(transaction_tx, 0, sizeof(transaction_tx));
             memset(transaction_rx, 0, sizeof(transaction_rx));
@@ -94,14 +161,6 @@ static void *spi_thread(void *arg) {
             transaction_tx[1] = (len & 0x0000FF00) >> 8;
             transaction_tx[2] = (len & 0x00FF0000) >> 16;
             transaction_tx[3] = (len & 0xFF000000) >> 24;
-
-            // if(len > 0) {
-            //     printf("send %u: ", len);
-            //     for(uint32_t i = 0; i < len; i++) {
-            //         printf("%02X ", transaction_tx[TRANSACTION_SIZE_HEADER + i]);
-            //     }
-            //     printf("\n");
-            // }
         }
 
         res = ioctl(spi, SPI_IOC_MESSAGE(1), &transaction);
@@ -118,12 +177,6 @@ static void *spi_thread(void *arg) {
                   (((uint32_t)transaction_rx[2]) << 16) | (((uint32_t)transaction_rx[3]) << 24);
 
             if((len > 0) && (len <= TRANSACTION_SIZE_PAYLOAD_MAX)) {
-                // printf("recv %u: ", len);
-                // for(uint32_t i = 0; i < len; i++) {
-                //     printf("%02X ", transaction_rx[TRANSACTION_SIZE_HEADER + i]);
-                // }
-                // printf("\n");
-
                 queue_write(spi_rx, &transaction_rx[TRANSACTION_SIZE_HEADER], len, QUEUE_NO_WAIT);
             }
         } else if(errno != EINTR) {
@@ -134,6 +187,7 @@ static void *spi_thread(void *arg) {
         }
     }
 
+    close(ready);
     close(spi);
 
     return NULL;
