@@ -222,11 +222,11 @@ static void spi_link(ppp_pcb *pcb, int err_code, void *ctx) {
     (void)ctx;
 
     if(err_code == PPPERR_NONE) {
-        ip_addr_t remote;
-        IP4_ADDR(&remote, 192, 168, 8, 1);
-        lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_DUAL, NULL, NULL);
+        // ip_addr_t remote;
+        // IP4_ADDR(&remote, 192, 168, 7, 1);
+        // lwiperf_start_tcp_client(&remote, LWIPERF_TCP_PORT_DEFAULT, LWIPERF_DUAL, NULL, NULL);
 
-        // lwiperf_start_tcp_server_default(NULL, NULL);
+        lwiperf_start_tcp_server_default(NULL, NULL);
     }
 }
 
