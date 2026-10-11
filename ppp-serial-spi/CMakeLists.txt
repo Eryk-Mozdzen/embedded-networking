@@ -302,3 +302,14 @@ add_custom_target(flash
     COMMAND STM32_Programmer_CLI -c port=SWD -w ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.elf -rst
     DEPENDS ${CMAKE_PROJECT_NAME}.elf
 )
+
+add_custom_target(patch
+    COMMAND ${CMAKE_COMMAND}
+        -DREPO=${CMAKE_SOURCE_DIR}/../third-party/lwip
+        -DPATCH=${CMAKE_SOURCE_DIR}/0001-ip4_forward-fix-checksum-recalculation-bugs.patch
+        -P ${CMAKE_SOURCE_DIR}/patch.cmake
+    COMMENT "Applying lwIP patches"
+    VERBATIM
+)
+
+add_dependencies(${CMAKE_PROJECT_NAME}.elf patch)

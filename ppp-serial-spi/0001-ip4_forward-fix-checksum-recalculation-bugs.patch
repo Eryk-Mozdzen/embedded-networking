@@ -1,0 +1,98 @@
+From 2569ae420ac5c995fb5e85befae77a2622ef2c40 Mon Sep 17 00:00:00 2001
+From: David Frey <dfrey@semtech.com>
+Date: Thu, 30 May 2024 09:55:20 -0700
+Subject: [PATCH] ip4_forward: fix checksum recalculation bugs
+
+Address three issues in the IPv4 forwarding path:
+  1. Remove code that zeros out L4 checksums (e.g. UDP, ICMP, TCP, etc.) in the
+     IPv4 forwarding path. The routing device should not re-compute the L4
+     checksums even if the implementation is supported in hardware.
+  2. When deciding whether or not to zero the IPv4 checksum of a forwarded
+     packet in preparation for hardware supported checksum calculation, use the
+     checksum settings of the outbound netif rather than the settings of the
+     inbound netif. This issue was reported by Tom Gibson on 2022-02-24 in
+     https://savannah.nongnu.org/bugs/?56288, but no fix was subsequently
+     applied to the LwIP source.
+  3. Correct the logic for the zeroing of IPv4 checksums in preparation for
+     hardware supported checksum calculation. The previous version of the code
+     would zero the IPv4 checksum in the forwarding path in the case where
+     CHECKSUM_GEN_IP==1 and LWIP_CHECKSUM_CTRL_PER_NETIF==0. This was the
+     incorrect behevior because there is no hardware support for checksums in
+     this configuration. This issue was also identified by Tom Gibson in bug
+     #56288, but his proposed solution was not applied and was in fact incorrect
+     due to inverted logic on the NETIF_CHECKSUM_ENABLED(...) clause.
+
+This change has been tested under the CHECKSUM_GEN_*=1 and
+LWIP_CHECKSUM_CTRL_PER_NETIF=0 configuration. Other configurations have not been
+tested.
+---
+ src/core/ipv4/ip4.c      | 31 +------------------------------
+ src/include/lwip/netif.h |  5 ++---
+ 2 files changed, 3 insertions(+), 33 deletions(-)
+
+diff --git a/src/core/ipv4/ip4.c b/src/core/ipv4/ip4.c
+index e044bff2..d8334c82 100644
+--- a/src/core/ipv4/ip4.c
++++ b/src/core/ipv4/ip4.c
+@@ -337,38 +337,9 @@ ip4_forward(struct pbuf *p, struct ip_hdr *iphdr, struct netif *inp)
+   }
+ 
+   /* Take care of setting checksums to 0 for checksum offload netifs */
+-  if (CHECKSUM_GEN_IP || NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_GEN_IP)) {
++  if (!CHECKSUM_GEN_IP || !NETIF_CHECKSUM_ENABLED(netif, NETIF_CHECKSUM_GEN_IP)) {
+     IPH_CHKSUM_SET(iphdr, 0);
+   }
+-  switch (IPH_PROTO(iphdr)) {
+-#if LWIP_UDP
+-#if LWIP_UDPLITE
+-  case IP_PROTO_UDPLITE:
+-#endif
+-  case IP_PROTO_UDP:
+-    if (CHECKSUM_GEN_UDP || NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_GEN_UDP)) {
+-      ((struct udp_hdr *)((u8_t *)iphdr + IPH_HL_BYTES(iphdr)))->chksum = 0;
+-    }
+-    break;
+-#endif
+-#if LWIP_TCP
+-  case IP_PROTO_TCP:
+-    if (CHECKSUM_GEN_TCP || NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_GEN_TCP)) {
+-      ((struct tcp_hdr *)((u8_t *)iphdr + IPH_HL_BYTES(iphdr)))->chksum = 0;
+-    }
+-    break;
+-#endif
+-#if LWIP_ICMP
+-  case IP_PROTO_ICMP:
+-    if (CHECKSUM_GEN_ICMP || NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_GEN_ICMP)) {
+-      ((struct icmp_hdr *)((u8_t *)iphdr + IPH_HL_BYTES(iphdr)))->chksum = 0;
+-    }
+-    break;
+-#endif
+-  default:
+-    /* there's really nothing to do here other than satisfying 'switch-default' */
+-    break;
+-  }
+ 
+   LWIP_DEBUGF(IP_DEBUG, ("ip4_forward: forwarding packet to %"U16_F".%"U16_F".%"U16_F".%"U16_F"\n",
+                          ip4_addr1_16(ip4_current_dest_addr()), ip4_addr2_16(ip4_current_dest_addr()),
+diff --git a/src/include/lwip/netif.h b/src/include/lwip/netif.h
+index 0cde2c2a..0535e18f 100644
+--- a/src/include/lwip/netif.h
++++ b/src/include/lwip/netif.h
+@@ -409,12 +409,11 @@ struct netif {
+ #define NETIF_SET_CHECKSUM_CTRL(netif, chksumflags) do { \
+   (netif)->chksum_flags = chksumflags; } while(0)
+ #define NETIF_CHECKSUM_ENABLED(netif, chksumflag) (((netif) == NULL) || (((netif)->chksum_flags & (chksumflag)) != 0))
+-#define IF__NETIF_CHECKSUM_ENABLED(netif, chksumflag) if NETIF_CHECKSUM_ENABLED(netif, chksumflag)
+ #else /* LWIP_CHECKSUM_CTRL_PER_NETIF */
+-#define NETIF_CHECKSUM_ENABLED(netif, chksumflag) 0
++#define NETIF_CHECKSUM_ENABLED(netif, chksumflag) (1)
+ #define NETIF_SET_CHECKSUM_CTRL(netif, chksumflags)
+-#define IF__NETIF_CHECKSUM_ENABLED(netif, chksumflag)
+ #endif /* LWIP_CHECKSUM_CTRL_PER_NETIF */
++#define IF__NETIF_CHECKSUM_ENABLED(netif, chksumflag) if (NETIF_CHECKSUM_ENABLED(netif, chksumflag))
+ 
+ #if LWIP_SINGLE_NETIF
+ #define NETIF_FOREACH(netif) if (((netif) = netif_default) != NULL)
+-- 
+2.34.1
+
