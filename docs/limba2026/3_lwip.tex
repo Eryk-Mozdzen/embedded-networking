@@ -1,6 +1,41 @@
 \section{Biblioteka lwIP}
     \begin{frame}{Lightweight IP (lwIP)}
         \begin{itemize}
-            \item 
+            \item bogate community
+            \item dużo kodu w internecie
+            \item stworzona dla zastosowań embedded
+            \item szerokie możliwości
+            \item trudna w konfiguracji
+            \item \textbf{słabo wspierana}
+        \end{itemize}
+    \end{frame}
+
+    \begin{frame}{Możliwości}
+        \begin{itemize}
+            \item IP (Internet Protocol, IPv4 and IPv6) \textbf{including packet forwarding}
+            \item ICMP (Internet Control Message Protocol)
+            \item IGMP (Internet Group Management Protocol)
+            \item MLD (Multicast listener discovery for IPv6)
+            \item ND (Neighbor discovery)
+            \item DHCP, AutoIP/APIPA, ACD (Address Conflict Detection), DHCPv6
+            \item UDP (User Datagram Protocol)
+            \item TCP (Transmission Control Protocol)
+            \item TLS
+            \item \textbf{PPPoS and PPPoE (Point-to-point protocol over Serial/Ethernet)}
+            \item DNS (Domain name resolver incl. mDNS)
+            \item 6LoWPAN (via IEEE 802.15.4, BLE or ZEP)
+            \item Optional Berkeley-like socket API
+        \end{itemize}
+    \end{frame}
+
+    \begin{frame}{Możliwości c.d.}
+        \begin{itemize}
+            \item \textbf{HTTP server with SSI and CGI}
+            \item SNMPv2c agent with MIB compiler (Simple Network Management Protocol)
+            \item SNTP (Simple network time protocol)
+            \item NetBIOS name service responder
+            \item MDNS (Multicast DNS) responder
+            \item \textbf{iPerf server (and client) implementation}
+            \item MQTT client (TLS support via altcp)
         \end{itemize}
     \end{frame}
