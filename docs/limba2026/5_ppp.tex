@@ -1,0 +1,28 @@
+\section{Point-to-Point Protocol}
+    \begin{frame}[fragile]{Point-to-Point Protocol (PPP)}
+        \begin{itemize}
+            \item powstał w 1994
+            \item auto-negocjacja prędkości łacza, wielkosci buforów itp
+            \item prosta serializacja/deserializacja
+            \item wykrywanie błędów i retransmisja
+            \item mechanizmy kompresji i szyfrowania
+            \item PPP over Serial (PPPoS)
+            \item PPP over Ethernet (PPPoE)
+            \item PPP over ATM (PPPoA, PPPoEoA)
+            \item współcześnie używany przez modemy GSM (AT+PPP) \\ oraz dostawców internetu typu Orange
+        \end{itemize}
+    \end{frame}
+
+    \begin{frame}[fragile]{Point-to-Point Protocol (PPP)}{c.d.}
+        \begin{itemize}
+            \item urządzenie "server" czeka na rozpoczęcie sesji
+            \item urządzenie "client" rozpoczyna sesję
+            \item negocjacja parametrów łącza
+            \item urządzenie "server" ustala IP po obu stronach
+            \item podsieć gotowa do użytku
+        \end{itemize}
+
+        \begin{lstlisting}[language=bash]
+sudo pppd /dev/ttyUSB0 921600 192.168.7.1:192.168.7.2 local noauth debug nodetach nocrtscts
+        \end{lstlisting}
+    \end{frame}

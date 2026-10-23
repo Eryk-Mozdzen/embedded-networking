@@ -1,0 +1,20 @@
+\section{Serial Line Internet Protocol}
+    \begin{frame}[fragile]{Serial Line Internet Protocol (SLIP)}
+        \begin{itemize}
+            \item sposób na przesyłanie pakietów IP po łączu szeregowym
+            \item w 1984 powstał
+            \item w 1988 był powszechnie używany
+            \item prosta serializacja/deserializacja
+            \item brak sum kontrolnych
+            \item brak mechanizmów retransmisji
+            \item brak kompresji (potem dodali CSLIP)
+            \item brak szyfrowania
+            \item współcześnie wyparty przez PPP ale dalej wspierany
+        \end{itemize}
+
+        \begin{lstlisting}[language=bash]
+sudo slattach -L -p slip -s 115200 /dev/ttyUSB0
+sudo ip addr add 192.168.9.2/24 dev sl0
+sudo ip link set sl0 up
+        \end{lstlisting}
+    \end{frame}
