@@ -1,3 +1,6 @@
 [submodule "third-party/lwip"]
 	path = third-party/lwip
 	url = https://github.com/lwip-tcpip/lwip
+[submodule "atmega32-slip/uip"]
+	path = atmega32-slip/uip
+	url = https://github.com/adamdunkels/uip.git
